@@ -3,58 +3,97 @@ import csv
 import time
 import os
 
-CSV_FILE = r'C:\Users\Carl Rohan\Downloads\Something\Something.csv'
-SERIAL_PORT = 'COM5'  # Change to your Arduino COM port
+CSV_FILE = r'C:\Users\Pocoyo\Desktop\coding\Arduino_Rfid\Something\Something.csv'
+SERIAL_PORT = 'COM6'  # Change to actual port
 BAUD_RATE = 9600
 
 MENU = {
-    '1': ("Fried Rice", 50, "FR"),
-    '2': ("Chicken Adobo", 100, "CA"),
-    '3': ("Pork Sisig", 150, "S"),
-    '4': ("Beef Steak", 200, "BS"),
-    '5': ("Lechon Kawali", 250, "LK"),
+    '1': ("Fried Rice", 50),
+    '2': ("Chicken Adobo", 100),
+    '3': ("Pork Sisig", 150),
+    '4': ("Beef Steak", 200),
+    '5': ("Lechon Kawali", 250),
 }
 
-def print_menu():
-    print("\nMenu:")
-    for k, (name, price, code) in MENU.items():
-        print(f"{k}: {name} ({code}) - {price} PHP")
-    print("6: Finish ordering")
+current_order = []
+total_price = 0
 
-def collect_order():
-    order_items = {}
-    while True:
-        print_menu()
-        inp = input("Enter item number and quantity (e.g. 1 3) or '6' to finish: ").strip().lower()
-        if inp == '6':
-            break
-        parts = inp.split()
-        if len(parts) != 2:
-            print("Invalid input, format: item_number quantity")
-            continue
+def display_menu():
+    print("\n" + "="*40)
+    print("           FOOD MENU")
+    print("="*40)
+    for num, (name, price) in MENU.items():
+        print(f"{num}: {name} - {price} PHP")
+    print("="*40)
+    print("Instructions:")
+    print("- Enter item number (1-5)")
+    print("- For multiple quantities: '2x3' (3 Chicken Adobo)")
+    print("- Type 'done' when finished ordering")
+    print("="*40)
 
-        item_num, qty_str = parts
-        if item_num not in MENU:
-            print("Invalid item number")
-            continue
+def add_to_order(selection):
+    global current_order, total_price
+    
+    if 'x' in selection:
         try:
-            qty = int(qty_str)
-            if qty < 1:
-                print("Quantity must be positive")
-                continue
+            item_num, qty_str = selection.split('x')
+            item_num = item_num.strip()
+            qty = int(qty_str.strip())
         except ValueError:
-            print("Invalid quantity")
-            continue
+            print(f"Invalid format: {selection}")
+            return False
+    else:
+        item_num = selection.strip()
+        qty = 1
 
-        if item_num in order_items:
-            order_items[item_num] += qty
+    if item_num in MENU and qty > 0:
+        name, price = MENU[item_num]
+        item_total = price * qty
+        current_order.append({
+            'name': name,
+            'qty': qty,
+            'price': price,
+            'total': item_total
+        })
+        total_price += item_total
+        print(f"Added: {qty}x {name} - {item_total} PHP")
+        print(f"Current total: {total_price} PHP")
+        return True
+    else:
+        print(f"Invalid item or quantity: {selection}")
+        return False
+
+def get_order_summary():
+    global current_order
+    detailed_items = []
+    for item in current_order:
+        detailed_items.append(f"{item['qty']}x {item['name']} ({item['total']}PHP)")
+    return ', '.join(detailed_items)
+
+def take_order(ser):
+    global current_order, total_price
+    current_order = []
+    total_price = 0
+    
+    display_menu()
+    
+    while True:
+        selection = input("Enter your selection (or 'done' to finish): ").strip().lower()
+        
+        if selection == 'done':
+            if current_order:
+                print(f"\nOrder Summary:")
+                for item in current_order:
+                    print(f"  {item['qty']}x {item['name']} - {item['total']} PHP")
+                print(f"Total: {total_price} PHP")
+                
+                # Send total to Arduino
+                ser.write(f"SHOW_TOTAL:{total_price} PHP\n".encode())
+                return get_order_summary(), total_price
+            else:
+                print("No items ordered. Please add items or type 'done' to cancel.")
         else:
-            order_items[item_num] = qty
-
-        summary = ", ".join(f"{v}x({MENU[k][2]})" for k, v in order_items.items())
-        ser.write(f"ORDER:{summary}\n".encode())
-        print(f"Current order: {summary}")
-    return order_items
+            add_to_order(selection)
 
 def update_account(uid, ser, purchased_summary, total_price):
     rows = []
@@ -89,49 +128,67 @@ def update_account(uid, ser, purchased_summary, total_price):
         user_name = ""
         current_balance = 0
 
-    with open(CSV_FILE, 'w', newline='') as csvfile:
-        fieldnames = ['UID', 'Name', 'Balance']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    if response_code == "OK":
+        with open(CSV_FILE, 'w', newline='') as csvfile:
+            fieldnames = ['UID', 'Name', 'Balance']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
-    print(f"\nUID: {uid}\nUser: {user_name}\nTotal price: {total_price} PHP\nBalance after: {current_balance} PHP\nStatus: {response_code}")
-    print(f"Purchased: {purchased_summary}")
+    print(f"\nTransaction Details:")
+    print(f"UID: {uid}")
+    print(f"User: {user_name}")
+    print(f"Balance after purchase: {current_balance} PHP")
+    print(f"Status: {response_code}")
+    print(f"Purchased items: {purchased_summary}")
+    print(f"Total price: {total_price} PHP")
 
-    ser.write(f"PAY:{response_code},{user_name},{current_balance}\n".encode())
+    # Limit summary length
+    send_summary = purchased_summary
+    if len(send_summary) > 100:
+        send_summary = send_summary[:97] + "..."
+
+    response_str = f"{response_code},{user_name},{current_balance},{send_summary}\n"
+    ser.write(response_str.encode())
 
 def main():
-    global ser
     try:
         ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
     except serial.SerialException:
-        print(f"Cannot open serial port {SERIAL_PORT}. Check connection.")
+        print(f"Cannot open serial port {SERIAL_PORT} - check it.")
         return
 
-    time.sleep(2)  # Allow connection to stabilize
-    print("Welcome! Waiting for RFID scan...")
+    time.sleep(2)
+    print("System ready. Waiting for Arduino...")
+
+    current_order_summary = ""
+    current_total = 0
 
     while True:
-        line = ser.readline().decode(errors='ignore').strip()
-        if line:
-            print(f"\nScanned UID: {line}")
+        try:
+            line = ser.readline().decode(errors='ignore').strip()
+            if line:
+                print(f"Received: {line}")
 
-            order_items = collect_order()
-            if not order_items:
-                print("No items selected. Cancelling transaction.")
-                continue
+                if line == "START_ORDERING":
+                    print("\nStarting new order...")
+                    current_order_summary, current_total = take_order(ser)
 
-            purchased_desc = ", ".join(f"{qty}x({MENU[item][2]})" for item, qty in order_items.items())
-            print(f"\nFinal Order: {purchased_desc}")
+                elif line.startswith("RFID_SCANNED:"):
+                    uid = line.replace("RFID_SCANNED:", "")
+                    print(f"\nRFID Card Detected: {uid}")
+                    print(f"Processing payment for: {current_order_summary}")
+                    print(f"Total amount: {current_total} PHP")
+                    
+                    update_account(uid, ser, current_order_summary, current_total)
 
-            ser.write(f"ORDER:{purchased_desc}\n".encode())
+                elif line == "TRANSACTION_COMPLETE":
+                    print("\nTransaction completed. Resetting system...")
+                    time.sleep(2)
+                    ser.write("RESET_SYSTEM\n".encode())
 
-            print("Please tap your RFID card to pay...")
-
-            total_price = sum(MENU[item][1] * qty for item, qty in order_items.items())
-            update_account(line, ser, purchased_desc, total_price)
-
-            print("Ready for next order.\n")
+        except Exception as e:
+            print(f"Error: {e}")
 
 if __name__ == '__main__':
     main()
