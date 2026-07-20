@@ -17,6 +17,8 @@ MENU = {
 
 current_order = []
 total_price = 0
+current_user_uid = ""
+current_user_name = ""
 
 def display_menu():
     print("\n" + "="*40)
@@ -70,6 +72,15 @@ def get_order_summary():
         detailed_items.append(f"{item['qty']}x {item['name']} ({item['total']}PHP)")
     return ', '.join(detailed_items)
 
+def lookup_user(uid):
+    if os.path.exists(CSV_FILE):
+        with open(CSV_FILE, 'r', newline='') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                if row['UID'].upper() == uid.upper():
+                    return row['Name'], int(row['Balance'])
+    return None, 0
+
 def take_order(ser):
     global current_order, total_price
     current_order = []
@@ -106,7 +117,7 @@ def update_account(uid, ser, purchased_summary, total_price):
         with open(CSV_FILE, 'r', newline='') as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:
-                if row['UID'].lower() == uid.lower():
+                if row['UID'].upper() == uid.upper():
                     found = True
                     user_name = row['Name']
                     balance = int(row['Balance'])
@@ -152,6 +163,8 @@ def update_account(uid, ser, purchased_summary, total_price):
     ser.write(response_str.encode())
 
 def main():
+    global current_user_uid, current_user_name
+    
     try:
         ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
     except serial.SerialException:
@@ -159,7 +172,7 @@ def main():
         return
 
     time.sleep(2)
-    print("System ready. Waiting for Arduino...")
+    print("System ready. Waiting for card tap to start ordering...")
 
     current_order_summary = ""
     current_total = 0
@@ -170,13 +183,28 @@ def main():
             if line:
                 print(f"Received: {line}")
 
-                if line == "START_ORDERING":
-                    print("\nStarting new order...")
-                    current_order_summary, current_total = take_order(ser)
+                if line.startswith("CARD_FOR_ORDERING:"):
+                    uid = line.replace("CARD_FOR_ORDERING:", "")
+                    user_name, balance = lookup_user(uid)
+                    
+                    if user_name:
+                        current_user_uid = uid
+                        current_user_name = user_name
+                        print(f"\nCard recognized: {user_name} (Balance: {balance} PHP)")
+                        print("Starting order process...")
+                        
+                        # Tell Arduino to show ordering screen
+                        ser.write(f"START_ORDERING:{user_name}\n".encode())
+                        
+                        # Take order
+                        current_order_summary, current_total = take_order(ser)
+                    else:
+                        print(f"Unknown card: {uid}")
+                        ser.write("RESET_SYSTEM\n".encode())
 
                 elif line.startswith("RFID_SCANNED:"):
                     uid = line.replace("RFID_SCANNED:", "")
-                    print(f"\nRFID Card Detected: {uid}")
+                    print(f"\nPayment card detected: {uid}")
                     print(f"Processing payment for: {current_order_summary}")
                     print(f"Total amount: {current_total} PHP")
                     
@@ -186,6 +214,8 @@ def main():
                     print("\nTransaction completed. Resetting system...")
                     time.sleep(2)
                     ser.write("RESET_SYSTEM\n".encode())
+                    current_user_uid = ""
+                    current_user_name = ""
 
         except Exception as e:
             print(f"Error: {e}")
