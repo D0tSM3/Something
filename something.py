@@ -3,8 +3,9 @@ import csv
 import time
 import os
 
-CSV_FILE = r'C:\Users\Pocoyo\Desktop\Something-p3\Something-part2\Something.csv'
+CSV_FILE = r'C:\Users\Pocoyo\Desktop\coding\Something-p3\Something-part2\Something.csv'
 SERIAL_PORT = 'COM6'
+
 BAUD_RATE = 9600
 
 MENU = {
